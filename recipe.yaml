@@ -2,85 +2,90 @@
 # Flag mapping: `name: value` -> --name value | `name: true` -> --name | `name: false` -> omitted.
 
 server:
-  image: myllmbox/qwen38-flash-next-vllm:v5.2   # pinned public tag (digest in README) = vLLM 0.30.0 (vllm/vllm-openai) + patches:
-                                                # the n-gram tables (fp8 and NVFP4), the INT4-AutoRound fp8 side layers, the 4-bit
-                                                # output head (hibrid48), the fused multi-step MTP draft, RecoverSSM.
-                                                # v5.1 (hibrid48 default) = `git checkout v5.1`.
+  image: myllmbox/qwen38-flash-next-vllm:v5.3   # pinned public tag (digest in README) = vLLM 0.32.0 (vllm/vllm-openai) + patches:
+                                                # RecoverSSM, the NVFP4 n-gram table (NVMe, async reads), compressed-scale
+                                                # Marlin MoE, the fused multi-step MTP draft, dynamic draft depth in full CUDA
+                                                # graphs. v5.2 (INT4-AutoRound, vLLM 0.30) = `git checkout v5.2`.
   docker_args: --security-opt seccomp=unconfined   # required by the image's table reader
   cpuset: "5-9,15-19"                           # the GB10's 10 Cortex-X925 3.9GHz cores (0-4,10-14
                                                 # are 2.8GHz A725) — measured +2-3% at every concurrency
-  model: azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound   # HF repo — downloaded into ./models on first run (~120G)
-                                                # 5 of 512 experts per token, AutoRound int4 — the fastest. run.sh applies its
-                                                # settings itself (fp8 table, its draft head, KV 24G)
-  # model: myllmbox/Qwen3.8-Flash-Next-hibrid48   # the full 10-expert body (NVFP4, 98G): ~20 % slower, more creative answers
+  model: nvidia/Qwen3.8-Flash-Next-FP4-Local    # HF repo — downloaded into ./models on first run (~102G). NVIDIA's own
+                                                # quantization, served as shipped (NVFP4 experts, MXFP8 dense layers)
+  # model: myllmbox/Qwen3.8-Flash-Next-hibrid48   # our NVFP4 body (98G); set served-model-name below to tell them apart
   # model: myllmbox/Qwen3.8-Flash-Next-hibrid48-uncensored   # the abliterated body (OrcaRouter) with the same head, 98G:
                                                 # no refusals, NO guardrails — research / red-teaming / private use behind your
                                                 # own moderation. GATED on Hugging Face: accept its agreement, then hf auth login
-                                                # or export HF_TOKEN (run.sh checks). Same speed as hibrid48. Set served-model-name
-                                                # to Qwen/Qwen3.8-Flash-Next-Uncensored if you run both and want them told apart.
+                                                # or export HF_TOKEN (run.sh checks). Same speed as hibrid48
+  # model: azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound   # 5 of 512 experts per token, AutoRound int4 (~120G);
+                                                # run.sh applies its settings itself (fp8 table, its draft head, KV 24G)
   port: 8000
   models_dir: ./models
-  cache_dir: ./cache                            # compile caches + the table map (~52G INT4-AutoRound / ~31G hibrid48, prepared
-                                                # on the first boot of each); deletable,
+  cache_dir: ./cache                            # compile caches + the table map (~31G, prepared on the first boot); deletable,
                                                 # the next boot rebuilds it
-  patches: ""                                   # vLLM patches from patches/, space-separated (e.g. hermes-chat for Hermes);
-                                                # "" = the image as shipped. See patches/README.md
+  patches: ""                                   # vLLM patches from patches/, space-separated; "" = the image as shipped.
+                                                # See patches/README.md
 
 env:
-  MBX_PLE_MMAP: "1"
+  MBX_PLE_MMAP: "1"                             # n-gram table off the GPU, read from NVMe
   MBX_PLE_MMAP_MODE: "nvme"
   MBX_PLE_MMAP_PREWARM: "0"
+  MBX_PLE_ASYNC: "1"                            # table reads off the critical path: decode stays in full CUDA graphs
   VLLM_USE_BREAKABLE_CUDAGRAPH: "1"
+  MBX_LOADER_PREPARE: "0"                       # weights exactly as shipped
+  MBX_LOADER_EMPTY_CACHE: "1"
+  MBX_MARLIN_CSF: "1"                           # NVFP4 expert scales stay compressed on the GPU
+  MBX_CSF_VISUAL_BF16: "0"                      # vision tower as shipped
+  MBX_MXFP8_FI_BACKEND: "b12x"                  # MXFP8 layers on FlashInfer's small-M kernels
+  VLLM_DISABLED_KERNELS: FlashInferCutedslMxfp8LinearKernel,FlashInferTrtllmMxfp8LinearKernel,B12xMxfp8LinearKernel,DeepGemmMxfp8BmmLinearKernel,HummingMxfp8LinearKernel
+  MBX_DEPTH_SYNCFREE: "1"                       # draft-depth bookkeeping stays on the GPU
+  MBX_DRAFT_FP8: "1"                            # FP8 drafter projections (exact: every draft is verified)
+  # MBX_DRAFT_HEAD2: two-stage draft head — run.sh picks the basis shipped in the image for the model above
   # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
   PYTHONUNBUFFERED: "1"                         # load progress actually shows in ./view.sh
   VLLM_MARLIN_USE_ATOMIC_ADD: "1"               # Marlin small-N fast path (self-gating)
   TORCH_CUDA_ARCH_LIST: "12.1a"
   FLASHINFER_CUDA_ARCH_LIST: "12.1a"
+  TRITON_CACHE_DIR: /cache/triton
   MALLOC_MMAP_THRESHOLD_: "65536"               # glibc returns big freed blocks to the OS at once (the loader's
   MALLOC_TRIM_THRESHOLD_: "131072"              # garbage otherwise stays resident — and swaps)
 
 vllm:
   served-model-name: Qwen/Qwen3.8-Flash-Next
   engram-config: '{"cpu_offload": false}'
-  gdn-prefill-backend: triton
-  moe-backend: marlin                           # fastest MoE kernel for NVFP4 W4A16 on the GB10 (hibrid48; run.sh drops it for INT4-AutoRound)
+  moe-backend: marlin                           # NVFP4 experts on Marlin with compressed scales
+  load-format: mbx                              # our loader (reads only what each rank needs; drafter: 3 of 21 files)
   distributed-executor-backend: mp
-  gpu-memory-utilization: 0.70                  # with kv-cache-memory pinned this does not size the KV pool
-  kv-cache-memory: "27000000000"                # hibrid48: 27G bf16 = 876,726 KV tokens. INT4-AutoRound: run.sh uses 24G = 777,693. Leaves ~1G available
-                                                # at 16 streams; 26G if you run other things on the box
-  load-format: fastsafetensors                  # weights in ~80 s; remove for vLLM's default loader (~10 min)
-  max-model-len: 262144                         # the model's native max
-  block-size: 1632                              # required at K=5 (the model's attention ring must divide the block)
-  # compilation-config: '{"cudagraph_mode":"PIECEWISE","cudagraph_capture_sizes":[1,2,4,6,8,12,16,18,24,30,36,42,48,54,60,66,72,78,84,90,96],"compile_ranges_endpoints":[32]}'
-                                                # fixed K=5 (mode: off): multiples of K+1 (=6) up to seats × 6
-  compilation-config: '{"cudagraph_mode":"PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,10,12,14,15,16,18,20,21,24,25,28,30,32,35,36,40,42,44,45,48,49,50,52,54,55,56,60,63,64,65,66,70,72,75,77,78,80,84,88,90,91,96,98,104,105,112,120,128],"compile_ranges_endpoints":[32]}'
-                                                # dynamic depth (default): every depth 3..7 × seats, up to 16 × 8
-  max-num-seqs: 16                              # 16 streams use ~43 % of the pool (RecoverSSM: one GDN state per request,
-                                                # no per-draft copies)
+  gpu-memory-utilization: 0.88                  # with kv-cache-memory pinned this does not size the KV pool
+  kv-cache-memory: "27000000000"                # 27G fp8 = 1,661,476 KV tokens; 26G if you run other things on the box
+  kv-cache-dtype: fp8
+  max-model-len: 409600                         # 400k via YaRN = 262,144 × 1.5625 (config: @vr8vr8; 100 % needle
+                                                # retrieval at 407,552 tokens: @grau_marc). Native: 262144 without hf-overrides
+  hf-overrides: '{"text_config":{"max_position_embeddings":409600,"rope_parameters":{"rope_type":"yarn","factor":1.5625,"original_max_position_embeddings":262144,"rope_theta":10000000,"partial_rotary_factor":0.25,"mrope_section":[11,11,10],"mrope_interleaved":true}}}'
+  block-size: 3312                              # the attention ring (12 at K=7) must divide it; vLLM raises it to 6624
+  compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,10,12,14,15,16,18,20,21,24,28,32,36,40,48,56,64,72,80,88,96,104,112,120,128],"compile_ranges_endpoints":[32]}'
+                                                # full CUDA graphs for decode, 16 seats × (7 drafts + 1) = 128
+  max-num-seqs: 16                              # 16 streams (RecoverSSM: one GDN state per request, no per-draft copies)
   max-num-batched-tokens: 8192                  # also the image-input encoder budget — keep for image requests
   enable-prefix-caching: true
+  enable-prompt-tokens-details: true
   enable-auto-tool-choice: true
   tool-call-parser: qwen3_xml
   reasoning-parser: qwen3
-  # speculative-config: '{"method":"mtp","num_speculative_tokens":5,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
-                                                # fixed K=5 (mode: off): 5 draft tokens every step
   speculative-config: '{"method":"mtp","num_speculative_tokens":7,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
                                                 # dynamic depth (default): 7 = the deepest a request may draft
   async-scheduling: true
-  use-replayssm: true                           # RecoverSSM (vLLM PR 58863, ported): drafts verify off one GDN state and replay
+  use-replayssm: true                           # RecoverSSM (vLLM PR 58863): drafts verify off one GDN state and replay
                                                 # only the accepted tokens — faster steps, and draft depth costs no memory
   # default-chat-template-kwargs: '{"enable_thinking": false}'   # thinking off for every request. With thinking ON, give
                                                 # max_tokens well above the reasoning: a small budget ends with empty content
 
 
-# Dynamic draft depth (default since v5.1). Each request picks its own draft depth between `min` and num_speculative_tokens
-# from what it has recently accepted; a batch drafts the requests' average depth. Measured on one Spark against fixed K=5,
-# 1 to 12 streams: +7 to +28 % (prose gains most); with RecoverSSM, depth 7 costs no memory. Fixed K instead: mode: off,
-# and swap in the two commented K=5 lines above. run.sh writes cache/mbx-depth.json;
-# the serve re-reads that file while it runs, so the numbers below can be changed live.
+# Dynamic draft depth. Each request picks its own draft depth between `min` and num_speculative_tokens from what it has
+# recently accepted; a batch drafts the requests' average depth. run.sh writes cache/mbx-depth.json; the serve re-reads
+# that file while it runs, so the numbers below can be changed live. Fixed K instead: mode: off.
 mtp_depth:
-  mode: dynamic                                 # dynamic (default) | off = fixed K: swap in the K=5 lines above
-  min: 3                                        # lowest draft depth
+  mode: dynamic                                 # dynamic (default) | off = fixed K
+  min: 1                                        # lowest draft depth
   window: 48                                    # steps of history each decision looks at (8–128)
   promote: [60, 45]                             # +2 / +1 depth when the deepest position was accepted on more than this % of steps
   demote: [25, 15]                              # −1 / −2 depth when below this %

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qwen3.8-Flash-Next (hibrid48: NVFP4 n-gram table demand-paged + NVFP4 output head, vLLM 0.29, fp8 KV) on ONE DGX Spark: download if needed, wait for
+# Qwen3.8-Flash-Next (FP4-Local by default; hibrid48, hibrid48-uncensored, INT4-AutoRound) on ONE DGX Spark, vLLM 0.32: download if needed, wait for
 # memory, evict stale page cache, serve, wait healthy.
 # Everything is configured in recipe.yaml. OpenAI API on :$PORT. ./stop.sh stops, ./view.sh stats.
 set -euo pipefail
@@ -141,6 +141,11 @@ json.dump(cfg, open(os.path.join(out, "config.json"), "w"), indent=2)
 PY
   echo "· INT4-AutoRound: fp8 table from ple-table/ (its map: cache/ple-nvme-fp8, ~52G, built on the first boot), draft head in cache/draft-k10"
 fi
+# two-stage draft head: the basis fitted on this checkpoint, shipped in the image (none → the full head drafts)
+if ! printf '%s\n' "${ENVS[@]}" | grep -q '^MBX_DRAFT_HEAD2='; then
+  BASIS="/opt/mbx/draft/$LOCAL_NAME.basis.pt"
+  if docker run --rm --entrypoint test "$IMAGE" -f "$BASIS"; then ENVS+=(-e "MBX_DRAFT_HEAD2=$BASIS"); fi
+fi
 FLAGS=()
 while IFS=$'\t' read -r k v; do
   case "$v" in
@@ -236,7 +241,7 @@ MD_UP="$(lst "$(rkey mtp_depth promote)")"; MD_DN="$(lst "$(rkey mtp_depth demot
 printf '{"mode": "%s", "min": %s, "window": %s, "promote": [%s], "demote": [%s], "log": %s}\n' \
   "${MD_MODE:-off}" "${MD_MIN:-3}" "${MD_WIN:-48}" "${MD_UP:-60,45}" "${MD_DN:-25,15}" "${MD_LOG:-false}" > "$CACHE_ABS/mbx-depth.json"
 [ "${MD_MODE:-off}" = dynamic ] && echo "  · draft depth: dynamic (min ${MD_MIN:-3}, window ${MD_WIN:-48}, promote ${MD_UP:-60,45}, demote ${MD_DN:-25,15}) — edit cache/mbx-depth.json to change it live"
-echo "· starting $NAME  ($IMAGE)  on :$PORT — healthy in ~4 min; the very first boot on a box also prepares the table map (a few minutes, once)"
+echo "· starting $NAME  ($IMAGE)  on :$PORT — healthy in ~7 min; the very first boot on a box also prepares the table map and compiles kernels (~15 min, once)"
 docker run -d --name "$NAME" --gpus all --ipc=host \
   ${CPUSET:+--cpuset-cpus "$CPUSET"} \
   ${DOCKER_ARGS} \
@@ -259,7 +264,7 @@ echo "· streaming engine logs until healthy (Ctrl-C detaches; the container kee
 docker logs -f "$NAME" 2>&1 &
 LOGS=$!
 trap 'kill "$LOGS" 2>/dev/null || true' EXIT INT TERM
-for i in $(seq 1 240); do
+for i in $(seq 1 480); do
   if curl -sf -m 3 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     kill "$LOGS" 2>/dev/null || true; wait "$LOGS" 2>/dev/null || true
     # warm-up + self-check: one short thinking-on request. The first real request then hits a warm engine, and the
@@ -296,4 +301,4 @@ PY
   fi
   sleep 5
 done
-echo "✗ not healthy after 20 min — still booting? watch: docker logs -f $NAME"; exit 1
+echo "✗ not healthy after 40 min — still booting? watch: docker logs -f $NAME"; exit 1
