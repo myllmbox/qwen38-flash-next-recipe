@@ -11,7 +11,7 @@ server:
                                                 # are 2.8GHz A725) — measured +2-3% at every concurrency
   model: nvidia/Qwen3.8-Flash-Next-FP4-Local    # HF repo — downloaded into ./models on first run (~102G). NVIDIA's own
                                                 # quantization, served as shipped (NVFP4 experts, MXFP8 dense layers)
-  # model: myllmbox/Qwen3.8-Flash-Next-hibrid48   # our NVFP4 body (98G); set served-model-name below to tell them apart
+  # model: myllmbox/Qwen3.8-Flash-Next-hibrid48   # our NVFP4 body (98G)
   # model: myllmbox/Qwen3.8-Flash-Next-hibrid48-uncensored   # the abliterated body (OrcaRouter) with the same head, 98G:
                                                 # no refusals, NO guardrails — research / red-teaming / private use behind your
                                                 # own moderation. GATED on Hugging Face: accept its agreement, then hf auth login

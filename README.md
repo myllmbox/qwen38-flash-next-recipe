@@ -328,8 +328,8 @@ Switching is comment one line, uncomment another, `./run.sh`; `run.sh` applies e
 | `azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound` | 5 of 512 experts per token, AutoRound int4 experts, fp8 side layers and n-gram table | the v5.2 numbers (KV pool on v5.3: 1,476,867 tokens) |
 
 The uncensored repo is **gated**: open its Hugging Face page, accept the agreement, then `hf auth login` (or `export
-HF_TOKEN=…`) before `./run.sh` — the kit checks both and tells you what is missing. Running several checkpoints at different
-times? Set `served-model-name` to something distinct so clients and logs can tell them apart. FP4-Local weighs ~102 GB, the two
+HF_TOKEN=…`) before `./run.sh` — the kit checks both and tells you what is missing. Every checkpoint is served as
+`Qwen/Qwen3.8-Flash-Next`, so switching is invisible to clients. FP4-Local weighs ~102 GB, the two
 hibrid48 checkpoints 98 GB each; INT4-AutoRound is ~120 GB and prepares its own table map in `cache/` (~52G) on its first boot.
 
 ## Memory on a Spark: what the kit does about it
