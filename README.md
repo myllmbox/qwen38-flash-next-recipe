@@ -10,6 +10,23 @@ One box, one model, three commands. The default checkpoint is
 
 **Side by side with v5.1** — every number, gauntlet page and quality verdict: [myllmbox.com/?a=mbx-v53&b=mbx-v51](https://myllmbox.com/?a=mbx-v53&b=mbx-v51)
 
+## v5.3.1 (2026-10-23)
+
+Same checkpoint as v5.3; `git checkout v5.3` for the previous one.
+
+1. **Agent turns resume from the cache.** Prefill checkpoints for the GDN layers ([vLLM #60050](https://github.com/vllm-project/vllm/pull/60050))
+   and the n-gram short conv, cache hits every 64 tokens. A repeated 200k prompt recomputes 90 tokens; the next turn of a
+   conversation recomputes only the new turn.
+2. **No quantization of our own.** The drafter runs as shipped (bf16); v5.3's FP8 drafter projections are off.
+3. **MXFP8 on b12x as NVIDIA ships it** (bf16 activations on decode, MXFP8 on prefill).
+
+| 207k-token prompt | v5.3.1 |
+|---|---|
+| first token, cold | 85.3 s |
+| first token, prompt already cached | 0.67 s |
+| first token, cached prompt + new question | 0.65 s |
+| recomputed on a repeated prompt | 90 tokens |
+
 ## v5.3 (2026-10-20)
 
 v5.2 stays available: `git checkout v5.2`.
@@ -258,6 +275,8 @@ often. Published leaderboard numbers use other prompts, few-shot counts and full
 
 ## What changed
 
+**v5.3.1 (2026-10-23): agent turns resume from the cache, no own quantization.** See [v5.3.1](#v531-2026-10-23).
+
 **v5.2 (2026-10-05): the INT4-AutoRound checkpoint is the default** — +13 to +40 % over v5.1; hibrid48 and its uncensored twin
 stay one line away. See [v5.2](#v52-2026-10-05). v5.1 stays available: `git checkout v5.1`.
 
@@ -368,7 +387,8 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 - **`use-replayssm: true`**: RecoverSSM. Remove it for the stock GDN verify path (more memory per seat, slower steps).
 - **`compilation-config`**: full CUDA graphs for decode; the capture sizes cover every draft depth × seats (16 × 8 = 128).
   Shorten them only together with `max-num-seqs`, or the upper rungs decode without CUDA graphs.
-- **`block-size: 3312`**: the model's attention ring (12 at K=7) must divide the attention block; vLLM raises it to 6624.
+- **`block-size: 3456`**, **`prefix-match-unit: 64`**: the block is a multiple of 12 (the attention ring at K=7) and of 64
+  (the prefill-checkpoint grid); cache hits land every 64 tokens. Leave them.
 - **`docker_args: --security-opt seccomp=unconfined`**: required by the image's table reader; the container still runs
   unprivileged otherwise.
 - **`load-format: mbx`**: the image's loader. Keep it: FP4-Local's compressed expert scales go through it.
@@ -384,7 +404,7 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 
 ## What's in the image
 
-`myllmbox/qwen38-flash-next-vllm:v5.3` — upstream `vllm/vllm-openai:v0.32.0` plus patches, each an anchored or sha256-checked
+`myllmbox/qwen38-flash-next-vllm:v5.3.1` — upstream `vllm/vllm-openai:v0.32.0` plus patches, each an anchored or sha256-checked
 edit that refuses to apply twice and fails the build if its target moved:
 
 1. **RecoverSSM** ([vllm-project/vllm#58863](https://github.com/vllm-project/vllm/pull/58863) by
@@ -395,22 +415,25 @@ edit that refuses to apply twice and fails the build if its target moved:
    [vllm-project/vllm#58449](https://github.com/vllm-project/vllm/pull/58449),
 4. **dynamic draft depth** in full CUDA graphs, with the depth library (binary),
 5. **the image's loader** and the Marlin MoE kernel for compressed NVFP4 expert scales (binaries),
-6. **faster drafts** by [@Alssndr0](https://github.com/Alssndr0) (Apache-2.0): FP8 drafter projections and the two-stage draft
-   head, with its bases for FP4-Local and hibrid48,
-7. the output-head and hyper-connection quantization configs, the draft scale, and GB10 small-batch kernels for the bf16
-   output head and the MXFP8 layers,
+6. **the two-stage draft head** by [@Alssndr0](https://github.com/Alssndr0) (Apache-2.0), with its bases for FP4-Local and
+   hibrid48,
+7. the output-head and hyper-connection quantization configs, the draft scale, the GB10 small-batch kernel for the bf16
+   output head, and [b12x](https://github.com/local-inference-lab/b12x) (Apache-2.0) for the MXFP8 layers,
 8. **INT4-AutoRound support**: its fp8 side layers (azampatti's `vllm_fp8_hybrid`, MIT) and its fp8 n-gram table,
 9. **the M-RoPE cache fix for YaRN**: backport of [vllm-project/vllm#62409](https://github.com/vllm-project/vllm/pull/62409)
    by [@wtogami](https://github.com/wtogami),
-10. **the front proxy** (`mbx_proxy`), started only with a `proxy:` section.
+10. **the front proxy** (`mbx_proxy`), started only with a `proxy:` section,
+11. **prefill checkpoints** for the GDN layers (backport of [vllm-project/vllm#60050](https://github.com/vllm-project/vllm/pull/60050))
+    and the n-gram short conv.
 
-Digest: `sha256:cf52ff577851827110b34958bb21ced187369c2851f7de798eecd2de45ffa1de`.
+Digest: `sha256:ed5df971ee2ffada90d8801609fbfe7ee21088f8964ae2b28d6d8cddae52945f`.
 
+v5.3 (`…-vllm:v5.3`, digest `sha256:cf52ff577851827110b34958bb21ced187369c2851f7de798eecd2de45ffa1de`),
 v5.2 (`…-vllm:v5.2`, vLLM 0.30, digest `sha256:76eda2f6c0e51fd2a9913d97b6f36abd829965ca8cad661195fd70ec763ee7a3`), v5.1
 (`…-vllm:v5.1`, digest `sha256:733f1a576e7e5a4192b0475ac4c3c53b5e5f27a182e92de0972ce88853ce1edd`), v5 (`…-vllm:v5`, digest
 `sha256:695882cca3c64ff49d538fd37d72ae7db4537d039ff633da67909648b5ba4676`), v4 (`…-vllm:v4`, digest
 `sha256:51629f438f5ba3f7a96db110826c783d69b91a6851c43fb07d447644f157dcc4`), v3 (`…-vllm:v3`, vLLM 0.29, digest
-`sha256:61d2bc6ba5977024895734d0ef94918ac806d936c4e17a263906e246599f9862`), v2 and v1 stay available: `git checkout v5.2` / `v5.1` /
+`sha256:61d2bc6ba5977024895734d0ef94918ac806d936c4e17a263906e246599f9862`), v2 and v1 stay available: `git checkout v5.3` / `v5.2` / `v5.1` /
 `v5` / `v4` / `v3` / `v2` / `v1`.
 
 ## The full box

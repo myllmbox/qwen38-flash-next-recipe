@@ -2,7 +2,7 @@
 # Flag mapping: `name: value` -> --name value | `name: true` -> --name | `name: false` -> omitted.
 
 server:
-  image: myllmbox/qwen38-flash-next-vllm:v5.3   # pinned public tag (digest in README) = vLLM 0.32.0 (vllm/vllm-openai) + patches:
+  image: myllmbox/qwen38-flash-next-vllm:v5.3.1   # pinned public tag (digest in README) = vLLM 0.32.0 (vllm/vllm-openai) + patches:
                                                 # RecoverSSM, the NVFP4 n-gram table (NVMe, async reads), compressed-scale
                                                 # Marlin MoE, the fused multi-step MTP draft, dynamic draft depth in full CUDA
                                                 # graphs. v5.2 (INT4-AutoRound, vLLM 0.30) = `git checkout v5.2`.
@@ -35,10 +35,10 @@ env:
   MBX_LOADER_EMPTY_CACHE: "1"
   MBX_MARLIN_CSF: "1"                           # NVFP4 expert scales stay compressed on the GPU
   MBX_CSF_VISUAL_BF16: "0"                      # vision tower as shipped
-  MBX_MXFP8_FI_BACKEND: "b12x"                  # MXFP8 layers on FlashInfer's small-M kernels
-  VLLM_DISABLED_KERNELS: FlashInferCutedslMxfp8LinearKernel,FlashInferTrtllmMxfp8LinearKernel,B12xMxfp8LinearKernel,DeepGemmMxfp8BmmLinearKernel,HummingMxfp8LinearKernel
+  MBX_MXFP8_A16: "0"                            # MXFP8 on b12x "auto", as NVIDIA ships it
+  MBX_PLE_PREFILL_CKPT: "1"                     # prefill checkpoints: agent turns resume near the cached end
+  VLLM_DISABLED_KERNELS: FlashInferCutedslMxfp8LinearKernel,FlashInferTrtllmMxfp8LinearKernel,DeepGemmMxfp8BmmLinearKernel,HummingMxfp8LinearKernel
   MBX_DEPTH_SYNCFREE: "1"                       # draft-depth bookkeeping stays on the GPU
-  MBX_DRAFT_FP8: "1"                            # FP8 drafter projections (exact: every draft is verified)
   # MBX_DRAFT_HEAD2: two-stage draft head — run.sh picks the basis shipped in the image for the model above
   # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
   PYTHONUNBUFFERED: "1"                         # load progress actually shows in ./view.sh
@@ -53,6 +53,7 @@ vllm:
   served-model-name: Qwen/Qwen3.8-Flash-Next
   engram-config: '{"cpu_offload": false}'
   moe-backend: marlin                           # NVFP4 experts on Marlin with compressed scales
+  kernel-config: '{"linear_backend_per_quant":{"mxfp8":"b12x"}}'
   load-format: mbx                              # our loader (reads only what each rank needs; drafter: 3 of 21 files)
   distributed-executor-backend: mp
   gpu-memory-utilization: 0.88                  # with kv-cache-memory pinned this does not size the KV pool
@@ -61,7 +62,8 @@ vllm:
   max-model-len: 409600                         # 400k via YaRN = 262,144 × 1.5625 (config: @vr8vr8; 100 % needle
                                                 # retrieval at 407,552 tokens: @grau_marc). Native: 262144 without hf-overrides
   hf-overrides: '{"text_config":{"max_position_embeddings":409600,"rope_parameters":{"rope_type":"yarn","factor":1.5625,"original_max_position_embeddings":262144,"rope_theta":10000000,"partial_rotary_factor":0.25,"mrope_section":[11,11,10],"mrope_interleaved":true}}}'
-  block-size: 3312                              # the attention ring (12 at K=7) must divide it; vLLM raises it to 6624
+  block-size: 3456                              # a multiple of 12 (the attention ring at K=7) and 64 (prefill checkpoints)
+  prefix-match-unit: 64                         # cache hits every 64 tokens
   compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,10,12,14,15,16,18,20,21,24,28,32,36,40,48,56,64,72,80,88,96,104,112,120,128],"compile_ranges_endpoints":[32]}'
                                                 # full CUDA graphs for decode, 16 seats × (7 drafts + 1) = 128
   max-num-seqs: 16                              # 16 streams (RecoverSSM: one GDN state per request, no per-draft copies)
