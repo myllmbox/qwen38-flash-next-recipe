@@ -210,7 +210,7 @@ while it runs — edit it to change them live):
 
 | knob | default | what it does |
 |---|---|---|
-| `min` | 1 | lowest draft depth |
+| `min` | 3 | lowest draft depth, and the depth every new request starts at |
 | `window` | 48 | steps of history each decision looks at (8–128) |
 | `promote` | [60, 45] | +2 / +1 depth when the deepest position was accepted on more than this % of the window |
 | `demote` | [25, 15] | −1 / −2 depth when below this % |
