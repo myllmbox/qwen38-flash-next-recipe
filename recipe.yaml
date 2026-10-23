@@ -39,7 +39,7 @@ env:
   MBX_PLE_PREFILL_CKPT: "1"                     # prefill checkpoints: agent turns resume near the cached end
   VLLM_DISABLED_KERNELS: FlashInferCutedslMxfp8LinearKernel,FlashInferTrtllmMxfp8LinearKernel,DeepGemmMxfp8BmmLinearKernel,HummingMxfp8LinearKernel
   MBX_DEPTH_SYNCFREE: "1"                       # draft-depth bookkeeping stays on the GPU
-  # MBX_DRAFT_HEAD2: two-stage draft head — run.sh picks the basis shipped in the image for the model above
+  MBX_DRAFT_HEAD2: ""                            # "" = the drafter scores the full vocabulary (default); "auto" = two-stage draft head
   # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
   PYTHONUNBUFFERED: "1"                         # load progress actually shows in ./view.sh
   VLLM_MARLIN_USE_ATOMIC_ADD: "1"               # Marlin small-N fast path (self-gating)

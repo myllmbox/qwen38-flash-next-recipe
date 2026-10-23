@@ -17,7 +17,8 @@ Same checkpoint as v5.3; `git checkout v5.3` for the previous one.
 1. **Agent turns resume from the cache.** Prefill checkpoints for the GDN layers ([vLLM #60050](https://github.com/vllm-project/vllm/pull/60050))
    and the n-gram short conv, cache hits every 64 tokens. A repeated 200k prompt recomputes 90 tokens; the next turn of a
    conversation recomputes only the new turn.
-2. **No quantization of our own.** The drafter runs as shipped (bf16); v5.3's FP8 drafter projections are off.
+2. **No quantization of our own.** The drafter runs as shipped (bf16) and scores the full vocabulary; v5.3's FP8 drafter
+   projections are off, and the two-stage draft head is opt-in (`MBX_DRAFT_HEAD2: auto`, see Tuning).
 3. **MXFP8 on b12x as NVIDIA ships it** (bf16 activations on decode, MXFP8 on prefill).
 
 | 207k-token prompt | v5.3.1 |
@@ -395,6 +396,10 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 - **`max-num-batched-tokens`**: also the image-input encoder budget — 8192 fits one max-resolution image (~4.1k tokens).
 - **`async-scheduling` on**. Thinking is ON by default (model native); disable per request with
   `"chat_template_kwargs": {"enable_thinking": false}` for max speed on structured output.
+- **`MBX_DRAFT_HEAD2`** (`env:`): `""` (default) = the drafter scores the full 248k vocabulary. `auto` = the two-stage draft
+  head by [@Alssndr0](https://github.com/Alssndr0): a rank-256 FP8 copy of the output head picks 2,048 candidates and only
+  those are scored exactly, so drafts cost less but a token outside the 2,048 cannot be drafted. Output is unchanged (every
+  draft is verified); acceptance can drop. FP4-Local and hibrid48 have a basis in the image.
 - **`mtp_depth`**: dynamic draft depth, on by default — see [Dynamic draft depth](#dynamic-draft-depth).
 - **`proxy`**: optional front proxy, absent by default — see [Front proxy](#front-proxy-v51-optional).
 - **`patches`** (server): vLLM patches from [`patches/`](patches/), applied at launch over the image's files; the image

@@ -141,11 +141,14 @@ json.dump(cfg, open(os.path.join(out, "config.json"), "w"), indent=2)
 PY
   echo "· INT4-AutoRound: fp8 table from ple-table/ (its map: cache/ple-nvme-fp8, ~52G, built on the first boot), draft head in cache/draft-k10"
 fi
-# two-stage draft head: the basis fitted on this checkpoint, shipped in the image (none → the full head drafts)
-if ! printf '%s\n' "${ENVS[@]}" | grep -q '^MBX_DRAFT_HEAD2='; then
-  BASIS="/opt/mbx/draft/$LOCAL_NAME.basis.pt"
-  if docker run --rm --entrypoint test "$IMAGE" -f "$BASIS"; then ENVS+=(-e "MBX_DRAFT_HEAD2=$BASIS"); fi
-fi
+# two-stage draft head, opt-in (MBX_DRAFT_HEAD2: auto): the basis fitted on this checkpoint, shipped in the image
+for i in "${!ENVS[@]}"; do
+  if [ "${ENVS[$i]}" = "MBX_DRAFT_HEAD2=auto" ]; then
+    BASIS="/opt/mbx/draft/$LOCAL_NAME.basis.pt"
+    if docker run --rm --entrypoint test "$IMAGE" -f "$BASIS"; then ENVS[$i]="MBX_DRAFT_HEAD2=$BASIS"
+    else ENVS[$i]="MBX_DRAFT_HEAD2="; echo "· no draft-head basis for $LOCAL_NAME in the image: the full head drafts"; fi
+  fi
+done
 FLAGS=()
 while IFS=$'\t' read -r k v; do
   case "$v" in
