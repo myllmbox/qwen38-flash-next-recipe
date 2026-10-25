@@ -87,7 +87,9 @@ vllm:
 # that file while it runs, so the numbers below can be changed live. Fixed K instead: mode: off.
 mtp_depth:
   mode: dynamic                                 # dynamic (default) | off = fixed K
-  min: 1                                        # lowest draft depth
+  min: 3                                        # lowest draft depth, and the depth every request starts at (at 1 a new
+                                                # request drafts one token per step until its first decision, `window`
+                                                # steps in: most of a short reply such as an agent's tool call)
   window: 48                                    # steps of history each decision looks at (8–128)
   promote: [60, 45]                             # +2 / +1 depth when the deepest position was accepted on more than this % of steps
   demote: [25, 15]                              # −1 / −2 depth when below this %
