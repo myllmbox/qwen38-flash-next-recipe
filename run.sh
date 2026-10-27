@@ -149,6 +149,10 @@ for i in "${!ENVS[@]}"; do
     else ENVS[$i]="MBX_DRAFT_HEAD2="; echo "· no draft-head basis for $LOCAL_NAME in the image: the full head drafts"; fi
   fi
 done
+# compressed-tensors checkpoints (hibrid48-uncensored: fp8 q/k/v, bf16 indexer projection) load the indexer unfused
+if grep -q '"quant_method": *"compressed-tensors"' "$MODEL_DIR/config.json" 2>/dev/null; then
+  ENVS+=(-e MBX_QSA_UNFUSE_INDEXER=1)
+fi
 FLAGS=()
 while IFS=$'\t' read -r k v; do
   case "$v" in

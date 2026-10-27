@@ -443,7 +443,7 @@ edit that refuses to apply twice and fails the build if its target moved:
 11. **prefill checkpoints** for the GDN layers (backport of [vllm-project/vllm#60050](https://github.com/vllm-project/vllm/pull/60050))
     and the n-gram short conv.
 
-Digest: `sha256:43bd0b761c646509a9be560800503ed4da9f3288c78faa2110a87a2c7307a934`.
+Digest: `sha256:bc42593a5bbfd1a07e295b503d7685d951e587ed7ac50fa0c26adb57614f005f`.
 
 v5.3.1 (`…-vllm:v5.3.1`, digest `sha256:ed5df971ee2ffada90d8801609fbfe7ee21088f8964ae2b28d6d8cddae52945f`),
 v5.3 (`…-vllm:v5.3`, digest `sha256:cf52ff577851827110b34958bb21ced187369c2851f7de798eecd2de45ffa1de`),
