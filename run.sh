@@ -237,13 +237,7 @@ done
 # that are FREE, and a 60-70G stale shard cache during the load has stalled it
 find "$MODEL_DIR" -type f -name "*.safetensors" -exec dd if={} iflag=nocache count=0 status=none \; 2>/dev/null || true
 echo "  · page cache: checkpoint files evicted — MemFree $(awk '/^MemFree/{printf "%d", $2/1048576}' /proc/meminfo)G"
-# dynamic draft depth (recipe.yaml mtp_depth; absent or mode: off = fixed K) → cache/mbx-depth.json, read live by the serve
-lst() { printf '%s' "$1" | tr -d '[] '; }
-MD_MODE="$(rkey mtp_depth mode)"; MD_MIN="$(rkey mtp_depth min)"; MD_WIN="$(rkey mtp_depth window)"
-MD_UP="$(lst "$(rkey mtp_depth promote)")"; MD_DN="$(lst "$(rkey mtp_depth demote)")"; MD_LOG="$(rkey mtp_depth log)"
-printf '{"mode": "%s", "min": %s, "window": %s, "promote": [%s], "demote": [%s], "log": %s}\n' \
-  "${MD_MODE:-off}" "${MD_MIN:-3}" "${MD_WIN:-48}" "${MD_UP:-60,45}" "${MD_DN:-25,15}" "${MD_LOG:-false}" > "$CACHE_ABS/mbx-depth.json"
-[ "${MD_MODE:-off}" = dynamic ] && echo "  · draft depth: dynamic (min ${MD_MIN:-3}, window ${MD_WIN:-48}, promote ${MD_UP:-60,45}, demote ${MD_DN:-25,15}) — edit cache/mbx-depth.json to change it live"
+[ "$(rkey env MBX_DEPTH_MODE)" = dynamic ] && echo "  · draft depth: dynamic, ceiling $(rkey env MBX_DEPTH_CEIL) (recipe.yaml env)"
 echo "· starting $NAME  ($IMAGE)  on :$PORT — healthy in ~7 min; the very first boot on a box also prepares the table map and compiles kernels (~15 min, once)"
 docker run -d --name "$NAME" --gpus all --ipc=host \
   ${CPUSET:+--cpuset-cpus "$CPUSET"} \

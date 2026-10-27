@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next on one DGX Spark
 
-### v5.3: NVIDIA's [FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local) checkpoint on vLLM 0.32 — 9 of 12 gauntlet pages, 409,600-token context, 1.66M-token KV pool
+### v5.4: NVIDIA's [FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local) checkpoint on vLLM 0.32 — bf16 KV, up to 9 draft tokens, 409,600-token context, 881k-token KV pool
 
 One box, one model, three commands. The default checkpoint is
 [nvidia/Qwen3.8-Flash-Next-FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local), served as shipped.
@@ -9,6 +9,20 @@ One box, one model, three commands. The default checkpoint is
 [`INT4-AutoRound`](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound) by [@azampatti](https://github.com/azampatti).
 
 **Side by side with v5.1** — every number, gauntlet page and quality verdict: [myllmbox.com/?a=mbx-v53&b=mbx-v51](https://myllmbox.com/?a=mbx-v53&b=mbx-v51)
+
+## v5.4 (2026-10-27)
+
+Same checkpoint as v5.3.1; `git checkout v5.3.1` for the previous one.
+
+1. **bf16 KV cache** (was fp8). The drafts' acceptance at the deep positions roughly doubles: same box, same image, only the
+   KV dtype changed, +8 % on a thinking request and +10 to +23 % on code and mixed text at 4 and 8 streams. The pool is
+   881,260 tokens (2.15 × a 400k request); `kv-cache-dtype: fp8` gives 1.71M tokens back for about 10 % less speed.
+2. **Up to 9 draft tokens** at one request, with a ceiling by live requests: 2–3 → 7, 4–7 → 6, 8+ → 5. The depth policy is
+   set in `recipe.yaml` `env:` (`MBX_DEPTH_*`).
+3. **The drafter's output head is an NVFP4 copy** of NVIDIA's bf16 head, made at load: 0.36 GB instead of 1.27 GB read per
+   draft token, full vocabulary. The model still verifies every draft with the shipped bf16 head, so the text is NVIDIA's
+   model's; only the drafts' acceptance depends on the copy.
+4. **GDN recurrent state in bf16** (+10 % pool) and small-batch kernel plans for every verify size.
 
 ## v5.3.1 (2026-10-23)
 
@@ -201,23 +215,20 @@ value of each row is bold; the mixed prompt is in the table above.
 | **v5 (dynamic)** | 69.3 | 105.7 | 150.0 | 178.0 | 201.7 | 233.3 |
 | **v5.1 (dynamic, ≤7)** | **74.2** | **111.9** | **162.3** | **198.4** | **228.6** | **267.5** |
 
-**On by default since v5.1** (deepest depth 7; the tables above are v5, deepest 6). **Fixed K=5 instead**, in
-`recipe.yaml`: `mtp_depth.mode: off` and swap in the two commented K=5 lines next to `speculative-config` and
-`compilation-config`.
+**On by default since v5.1** (v5.4: deepest depth 9; the tables above are v5, deepest 6). **Fixed depth instead**:
+`MBX_DEPTH_MODE: off` drafts `num_speculative_tokens` every step.
 
-**Knobs** (`mtp_depth` in `recipe.yaml`; `run.sh` writes them to `cache/mbx-depth.json`, and the serve re-reads that file
-while it runs — edit it to change them live):
+**Knobs** (`env:` in `recipe.yaml`, read at boot):
 
 | knob | default | what it does |
 |---|---|---|
-| `min` | 3 | lowest draft depth, and the depth every new request starts at |
-| `window` | 48 | steps of history each decision looks at (8–128) |
-| `promote` | [60, 45] | +2 / +1 depth when the deepest position was accepted on more than this % of the window |
-| `demote` | [25, 15] | −1 / −2 depth when below this % |
-| `log` | false | `true` = one log line per decision: depth before → after and the measured rate |
+| `MBX_DEPTH_MIN` | 3 | lowest draft depth, and the depth every new request starts at |
+| `MBX_DEPTH_WINDOW` | 48 | steps of history each decision looks at |
+| `MBX_DEPTH_PROMOTE` | 60,45 | +2 / +1 depth when the deepest position was accepted on more than this % of the window |
+| `MBX_DEPTH_DEMOTE` | 25,15 | −1 / −2 depth when below this % |
+| `MBX_DEPTH_CEIL` | [2 -> 7, 4 -> 6, 8 -> 5] | deepest draft by live requests (1 request: `num_speculative_tokens`) |
 
-The deepest depth is `num_speculative_tokens`; the capture sizes must cover every depth × seats (the shipped list covers
-3 … 7 × 16).
+The capture sizes must cover every (live requests) × (depth + 1) the ceiling allows; the shipped list does, up to 16 × 6.
 
 ## Front proxy (v5.1, optional)
 
@@ -275,6 +286,8 @@ four questions each. The abliterated body thinks shorter (median reasoning −8 
 often. Published leaderboard numbers use other prompts, few-shot counts and full sets — a sanity band, not a column.
 
 ## What changed
+
+**v5.4 (2026-10-27): bf16 KV, up to 9 drafts, NVFP4 drafter head.** See [v5.4](#v54-2026-10-27).
 
 **v5.3.1 (2026-10-23): agent turns resume from the cache, no own quantization.** See [v5.3.1](#v531-2026-10-23).
 
@@ -381,14 +394,15 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 
 - **`max-model-len: 409600` + `hf-overrides`**: YaRN, 400k context (default). For the native 262,144: set `max-model-len:
   262144` and remove the `hf-overrides` line.
-- **`kv-cache-memory`** (bytes): 27G fp8 = 1,661,476 tokens (26G for more headroom); with INT4-AutoRound `run.sh` uses 24G =
-  1,476,867 tokens.
+- **`kv-cache-memory`** (bytes): 27G = 881,260 tokens in bf16 (26G for more headroom).
+- **`kv-cache-dtype: auto`** (bf16): `fp8` doubles the pool (1.71M tokens) for about 10 % less speed.
 - **`max-num-seqs`** 16: with RecoverSSM each request holds one recurrent state (no per-draft copies).
-- **`speculative-config`** up to 7 sampled draft tokens with block verification, depth chosen per request (`mtp_depth`).
+- **`speculative-config`** up to 9 sampled draft tokens with block verification, depth chosen per request (`MBX_DEPTH_*`).
 - **`use-replayssm: true`**: RecoverSSM. Remove it for the stock GDN verify path (more memory per seat, slower steps).
-- **`compilation-config`**: full CUDA graphs for decode; the capture sizes cover every draft depth × seats (16 × 8 = 128).
+- **`compilation-config`**: full CUDA graphs for decode; the capture sizes cover every draft depth × live requests the
+  ceiling allows (16 × 6 = 96).
   Shorten them only together with `max-num-seqs`, or the upper rungs decode without CUDA graphs.
-- **`block-size: 3456`**, **`prefix-match-unit: 64`**: the block is a multiple of 12 (the attention ring at K=7) and of 64
+- **`block-size: 3456`**, **`prefix-match-unit: 64`**: the block is a multiple of 16 (the attention ring at K=9) and of 64
   (the prefill-checkpoint grid); cache hits land every 64 tokens. Leave them.
 - **`docker_args: --security-opt seccomp=unconfined`**: required by the image's table reader; the container still runs
   unprivileged otherwise.
@@ -396,11 +410,9 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 - **`max-num-batched-tokens`**: also the image-input encoder budget — 8192 fits one max-resolution image (~4.1k tokens).
 - **`async-scheduling` on**. Thinking is ON by default (model native); disable per request with
   `"chat_template_kwargs": {"enable_thinking": false}` for max speed on structured output.
-- **`MBX_DRAFT_HEAD2`** (`env:`): `""` (default) = the drafter scores the full 248k vocabulary. `auto` = the two-stage draft
-  head by [@Alssndr0](https://github.com/Alssndr0): a rank-256 FP8 copy of the output head picks 2,048 candidates and only
-  those are scored exactly, so drafts cost less but a token outside the 2,048 cannot be drafted. Output is unchanged (every
-  draft is verified); acceptance can drop. FP4-Local and hibrid48 have a basis in the image.
-- **`mtp_depth`**: dynamic draft depth, on by default — see [Dynamic draft depth](#dynamic-draft-depth).
+- **`MBX_DRAFT_HEAD`** (`env:`): `"1"` (default) = the drafter scores the full vocabulary with an NVFP4 copy of the output head
+  made at load; `"0"` = it reads NVIDIA's bf16 head (1.27 GB per draft token). The model verifies with the bf16 head either way.
+- **`MBX_DEPTH_*`**: dynamic draft depth, on by default — see [Dynamic draft depth](#dynamic-draft-depth).
 - **`proxy`**: optional front proxy, absent by default — see [Front proxy](#front-proxy-v51-optional).
 - **`patches`** (server): vLLM patches from [`patches/`](patches/), applied at launch over the image's files; the image
   itself is unchanged. A patch made for an older image stops `run.sh` if it does not fit. The QSA logits-workspace fix
@@ -409,7 +421,7 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 
 ## What's in the image
 
-`myllmbox/qwen38-flash-next-vllm:v5.3.1` — upstream `vllm/vllm-openai:v0.32.0` plus patches, each an anchored or sha256-checked
+`myllmbox/qwen38-flash-next-vllm:v5.4` — upstream `vllm/vllm-openai:v0.32.0` plus patches, each an anchored or sha256-checked
 edit that refuses to apply twice and fails the build if its target moved:
 
 1. **RecoverSSM** ([vllm-project/vllm#58863](https://github.com/vllm-project/vllm/pull/58863) by
@@ -420,8 +432,8 @@ edit that refuses to apply twice and fails the build if its target moved:
    [vllm-project/vllm#58449](https://github.com/vllm-project/vllm/pull/58449),
 4. **dynamic draft depth** in full CUDA graphs, with the depth library (binary),
 5. **the image's loader** and the Marlin MoE kernel for compressed NVFP4 expert scales (binaries),
-6. **the two-stage draft head** by [@Alssndr0](https://github.com/Alssndr0) (Apache-2.0), with its bases for FP4-Local and
-   hibrid48,
+6. **the drafter's NVFP4 output-head copy**, and [@Alssndr0](https://github.com/Alssndr0)'s sync-free depth bookkeeping and
+   two-stage draft head (Apache-2.0),
 7. the output-head and hyper-connection quantization configs, the draft scale, the GB10 small-batch kernel for the bf16
    output head, and [b12x](https://github.com/local-inference-lab/b12x) (Apache-2.0) for the MXFP8 layers,
 8. **INT4-AutoRound support**: its fp8 side layers (azampatti's `vllm_fp8_hybrid`, MIT) and its fp8 n-gram table,
@@ -431,14 +443,15 @@ edit that refuses to apply twice and fails the build if its target moved:
 11. **prefill checkpoints** for the GDN layers (backport of [vllm-project/vllm#60050](https://github.com/vllm-project/vllm/pull/60050))
     and the n-gram short conv.
 
-Digest: `sha256:ed5df971ee2ffada90d8801609fbfe7ee21088f8964ae2b28d6d8cddae52945f`.
+Digest: `sha256:43bd0b761c646509a9be560800503ed4da9f3288c78faa2110a87a2c7307a934`.
 
+v5.3.1 (`…-vllm:v5.3.1`, digest `sha256:ed5df971ee2ffada90d8801609fbfe7ee21088f8964ae2b28d6d8cddae52945f`),
 v5.3 (`…-vllm:v5.3`, digest `sha256:cf52ff577851827110b34958bb21ced187369c2851f7de798eecd2de45ffa1de`),
 v5.2 (`…-vllm:v5.2`, vLLM 0.30, digest `sha256:76eda2f6c0e51fd2a9913d97b6f36abd829965ca8cad661195fd70ec763ee7a3`), v5.1
 (`…-vllm:v5.1`, digest `sha256:733f1a576e7e5a4192b0475ac4c3c53b5e5f27a182e92de0972ce88853ce1edd`), v5 (`…-vllm:v5`, digest
 `sha256:695882cca3c64ff49d538fd37d72ae7db4537d039ff633da67909648b5ba4676`), v4 (`…-vllm:v4`, digest
 `sha256:51629f438f5ba3f7a96db110826c783d69b91a6851c43fb07d447644f157dcc4`), v3 (`…-vllm:v3`, vLLM 0.29, digest
-`sha256:61d2bc6ba5977024895734d0ef94918ac806d936c4e17a263906e246599f9862`), v2 and v1 stay available: `git checkout v5.3` / `v5.2` / `v5.1` /
+`sha256:61d2bc6ba5977024895734d0ef94918ac806d936c4e17a263906e246599f9862`), v2 and v1 stay available: `git checkout v5.3.1` / `v5.3` / `v5.2` / `v5.1` /
 `v5` / `v4` / `v3` / `v2` / `v1`.
 
 ## The full box

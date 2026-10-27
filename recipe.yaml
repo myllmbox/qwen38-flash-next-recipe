@@ -2,7 +2,7 @@
 # Flag mapping: `name: value` -> --name value | `name: true` -> --name | `name: false` -> omitted.
 
 server:
-  image: myllmbox/qwen38-flash-next-vllm:v5.3.1   # pinned public tag (digest in README) = vLLM 0.32.0 (vllm/vllm-openai) + patches:
+  image: myllmbox/qwen38-flash-next-vllm:v5.4     # pinned public tag (digest in README) = vLLM 0.32.0 (vllm/vllm-openai) + patches:
                                                 # RecoverSSM, the NVFP4 n-gram table (NVMe, async reads), compressed-scale
                                                 # Marlin MoE, the fused multi-step MTP draft, dynamic draft depth in full CUDA
                                                 # graphs. v5.2 (INT4-AutoRound, vLLM 0.30) = `git checkout v5.2`.
@@ -39,7 +39,14 @@ env:
   MBX_PLE_PREFILL_CKPT: "1"                     # prefill checkpoints: agent turns resume near the cached end
   VLLM_DISABLED_KERNELS: FlashInferCutedslMxfp8LinearKernel,FlashInferTrtllmMxfp8LinearKernel,DeepGemmMxfp8BmmLinearKernel,HummingMxfp8LinearKernel
   MBX_DEPTH_SYNCFREE: "1"                       # draft-depth bookkeeping stays on the GPU
-  MBX_DRAFT_HEAD2: ""                            # "" = the drafter scores the full vocabulary (default); "auto" = two-stage draft head
+  MBX_DEPTH_MODE: dynamic                       # dynamic draft depth | off = always num_speculative_tokens
+  MBX_DEPTH_MIN: "3"                            # the depth every request starts at
+  MBX_DEPTH_WINDOW: "48"                        # steps of history per decision
+  MBX_DEPTH_PROMOTE: "60,45"                    # +2 / +1 depth above this % acceptance of the deepest position
+  MBX_DEPTH_DEMOTE: "25,15"                     # -1 / -2 depth below this %
+  MBX_DEPTH_CEIL: "[2 -> 7, 4 -> 6, 8 -> 5]"    # deepest draft by live requests: 1 → 9, 2-3 → 7, 4-7 → 6, 8+ → 5
+  MBX_DRAFT_HEAD: "1"                           # the drafter scores the full vocabulary with an NVFP4 copy of the head (0.36 GB
+                                                # instead of 1.27 GB per draft); the model still verifies with NVIDIA's bf16 head
   # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
   PYTHONUNBUFFERED: "1"                         # load progress actually shows in ./view.sh
   VLLM_MARLIN_USE_ATOMIC_ADD: "1"               # Marlin small-N fast path (self-gating)
@@ -57,15 +64,18 @@ vllm:
   load-format: mbx                              # our loader (reads only what each rank needs; drafter: 3 of 21 files)
   distributed-executor-backend: mp
   gpu-memory-utilization: 0.88                  # with kv-cache-memory pinned this does not size the KV pool
-  kv-cache-memory: "27000000000"                # 27G fp8 = 1,661,476 KV tokens; 26G if you run other things on the box
-  kv-cache-dtype: fp8
+  kv-cache-memory: "27000000000"                # 27G = 881,260 KV tokens in bf16; 26G if you run other things on the box
+  kv-cache-dtype: auto                          # bf16 KV: the deep drafts land ~2x as often (+8-23 %). fp8 = 1.71M tokens
+                                                # (twice the pool) for ~10 % less speed
+  mamba-ssm-cache-dtype: bfloat16               # GDN recurrent state in bf16 (+10 % pool, +5-8 % at 8 streams)
   max-model-len: 409600                         # 400k via YaRN = 262,144 × 1.5625 (config: @vr8vr8; 100 % needle
                                                 # retrieval at 407,552 tokens: @grau_marc). Native: 262144 without hf-overrides
   hf-overrides: '{"text_config":{"max_position_embeddings":409600,"rope_parameters":{"rope_type":"yarn","factor":1.5625,"original_max_position_embeddings":262144,"rope_theta":10000000,"partial_rotary_factor":0.25,"mrope_section":[11,11,10],"mrope_interleaved":true}}}'
-  block-size: 3456                              # a multiple of 12 (the attention ring at K=7) and 64 (prefill checkpoints)
+  block-size: 3456                              # a multiple of 16 (the attention ring at K=9) and 64 (prefill checkpoints)
   prefix-match-unit: 64                         # cache hits every 64 tokens
-  compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,10,12,14,15,16,18,20,21,24,28,32,36,40,48,56,64,72,80,88,96,104,112,120,128],"compile_ranges_endpoints":[32]}'
-                                                # full CUDA graphs for decode, 16 seats × (7 drafts + 1) = 128
+  compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,20,21,24,25,27,30,32,35,39,40,44,48,49,54,60,64,70,75,80,90,96]}'
+                                                # full CUDA graphs for decode: every (live requests) × (depth + 1) the
+                                                # depth ceiling allows, 16 seats × (5 drafts + 1) = 96 at most
   max-num-seqs: 16                              # 16 streams (RecoverSSM: one GDN state per request, no per-draft copies)
   max-num-batched-tokens: 8192                  # also the image-input encoder budget — keep for image requests
   enable-prefix-caching: true
@@ -73,27 +83,13 @@ vllm:
   enable-auto-tool-choice: true
   tool-call-parser: qwen3_xml
   reasoning-parser: qwen3
-  speculative-config: '{"method":"mtp","num_speculative_tokens":7,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
-                                                # dynamic depth (default): 7 = the deepest a request may draft
+  speculative-config: '{"method":"mtp","num_speculative_tokens":9,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
+                                                # dynamic depth (MBX_DEPTH_* above): 9 = the deepest a request may draft
   async-scheduling: true
   use-replayssm: true                           # RecoverSSM (vLLM PR 58863): drafts verify off one GDN state and replay
                                                 # only the accepted tokens — faster steps, and draft depth costs no memory
   # default-chat-template-kwargs: '{"enable_thinking": false}'   # thinking off for every request. With thinking ON, give
                                                 # max_tokens well above the reasoning: a small budget ends with empty content
-
-
-# Dynamic draft depth. Each request picks its own draft depth between `min` and num_speculative_tokens from what it has
-# recently accepted; a batch drafts the requests' average depth. run.sh writes cache/mbx-depth.json; the serve re-reads
-# that file while it runs, so the numbers below can be changed live. Fixed K instead: mode: off.
-mtp_depth:
-  mode: dynamic                                 # dynamic (default) | off = fixed K
-  min: 3                                        # lowest draft depth, and the depth every request starts at (at 1 a new
-                                                # request drafts one token per step until its first decision, `window`
-                                                # steps in: most of a short reply such as an agent's tool call)
-  window: 48                                    # steps of history each decision looks at (8–128)
-  promote: [60, 45]                             # +2 / +1 depth when the deepest position was accepted on more than this % of steps
-  demote: [25, 15]                              # −1 / −2 depth when below this %
-  log: false                                    # true = one log line per decision (depth before → after, the measured rate)
 
 
 # Optional front proxy (uncomment the section to use it; absent = vLLM serves the port itself). It keeps long prefills
