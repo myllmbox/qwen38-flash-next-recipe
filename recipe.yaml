@@ -17,7 +17,7 @@ server:
                                                 # own moderation. GATED on Hugging Face: accept its agreement, then hf auth login
                                                 # or export HF_TOKEN (run.sh checks). Same speed as hibrid48
   # model: azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound   # 5 of 512 experts per token, AutoRound int4 (~120G);
-                                                # run.sh applies its settings itself (fp8 table, its draft head, KV 24G)
+                                                # run.sh applies its settings itself (fp8 table, its draft head, KV 23G)
   port: 8000
   models_dir: ./models
   cache_dir: ./cache                            # compile caches + the table map (~31G, prepared on the first boot); deletable,
@@ -44,7 +44,7 @@ env:
   MBX_DEPTH_WINDOW: "48"                        # steps of history per decision
   MBX_DEPTH_PROMOTE: "60,45"                    # +2 / +1 depth above this % acceptance of the deepest position
   MBX_DEPTH_DEMOTE: "25,15"                     # -1 / -2 depth below this %
-  MBX_DEPTH_CEIL: "[2 -> 7, 4 -> 6, 8 -> 5]"    # deepest draft by live requests: 1 → 9, 2-3 → 7, 4-7 → 6, 8+ → 5
+  MBX_DEPTH_CEIL: "[4 -> 8, 6 -> 7, 12 -> 6, 14 -> 5]"   # deepest draft by live requests: 1-3 → 9, 4-5 → 8, 6-11 → 7, 12-13 → 6, 14+ → 5
   MBX_DRAFT_HEAD: "1"                           # the drafter scores the full vocabulary with an NVFP4 copy of the head (0.36 GB
                                                 # instead of 1.27 GB per draft); the model still verifies with NVIDIA's bf16 head
   # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
@@ -53,6 +53,7 @@ env:
   TORCH_CUDA_ARCH_LIST: "12.1a"
   FLASHINFER_CUDA_ARCH_LIST: "12.1a"
   TRITON_CACHE_DIR: /cache/triton
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True   # long prompts / more streams: without it each bigger shape strands a new cached GPU block (Qwen solo hung at c=16, 2026-10-27)
   MALLOC_MMAP_THRESHOLD_: "65536"               # glibc returns big freed blocks to the OS at once (the loader's
   MALLOC_TRIM_THRESHOLD_: "131072"              # garbage otherwise stays resident — and swaps)
 
@@ -64,9 +65,10 @@ vllm:
   load-format: mbx                              # our loader (reads only what each rank needs; drafter: 3 of 21 files)
   distributed-executor-backend: mp
   gpu-memory-utilization: 0.88                  # with kv-cache-memory pinned this does not size the KV pool
-  kv-cache-memory: "27000000000"                # 27G = 881,260 KV tokens in bf16; 26G if you run other things on the box
-  kv-cache-dtype: auto                          # bf16 KV: the deep drafts land ~2x as often (+8-23 %). fp8 = 1.71M tokens
-                                                # (twice the pool) for ~10 % less speed
+  kv-cache-memory: "26000000000"                # 26G bf16 KV: leaves room for the GPU buffers 8-16 streams grow into
+  kv-cache-dtype: auto                          # bf16 KV: the deep drafts land ~2x as often (+8-23 %). fp8 = ~1.6M tokens
+                                                # (twice the pool) for 7-19 % less speed; with fp8 set num_speculative_tokens
+                                                # 7 instead of 9 below (v5.3's setting: fp8 drafts land too rarely at depth 8-9)
   mamba-ssm-cache-dtype: bfloat16               # GDN recurrent state in bf16 (+10 % pool, +5-8 % at 8 streams)
   max-model-len: 409600                         # 400k via YaRN = 262,144 × 1.5625 (config: @vr8vr8; 100 % needle
                                                 # retrieval at 407,552 tokens: @grau_marc). Native: 262144 without hf-overrides

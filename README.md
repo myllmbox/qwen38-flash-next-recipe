@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next on one DGX Spark
 
-### v5.4: NVIDIA's [FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local) checkpoint on vLLM 0.32 — bf16 KV, up to 9 draft tokens, 409,600-token context, 881k-token KV pool
+### v5.4: NVIDIA's [FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local) checkpoint on vLLM 0.32 — bf16 KV, up to 9 draft tokens, 409,600-token context, 849k-token KV pool
 
 One box, one model, three commands. The default checkpoint is
 [nvidia/Qwen3.8-Flash-Next-FP4-Local](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local), served as shipped.
@@ -10,14 +10,22 @@ One box, one model, three commands. The default checkpoint is
 
 **Side by side with v5.1** — every number, gauntlet page and quality verdict: [myllmbox.com/?a=mbx-v53&b=mbx-v51](https://myllmbox.com/?a=mbx-v53&b=mbx-v51)
 
+## v5.4 update (2026-10-28)
+
+Same image. `recipe.yaml` only:
+
+1. **Deeper drafts at 2–13 streams**: ceiling 1–3 → 9, 4–5 → 8, 6–11 → 7, 12–13 → 6, 14+ → 5 (was 2–3 → 7, 4–7 → 6, 8+ → 5).
+2. **KV 26G** (was 27G): room for the GPU buffers 8–16 streams grow into; `expandable_segments` allocator.
+
 ## v5.4 (2026-10-27)
 
 Same checkpoint as v5.3.1; `git checkout v5.3.1` for the previous one.
 
 1. **bf16 KV cache** (was fp8). The drafts' acceptance at the deep positions roughly doubles: same box, same image, only the
    KV dtype changed, +8 % on a thinking request and +10 to +23 % on code and mixed text at 4 and 8 streams. The pool is
-   881,260 tokens (2.15 × a 400k request); `kv-cache-dtype: fp8` gives 1.71M tokens back for about 10 % less speed.
-2. **Up to 9 draft tokens** at one request, with a ceiling by live requests: 2–3 → 7, 4–7 → 6, 8+ → 5. The depth policy is
+   about 849,000 tokens at 26G (2.07 × a 400k request); `kv-cache-dtype: fp8` doubles it (~1.6M tokens) for 7–19 % less
+   speed — with fp8 set `num_speculative_tokens` to 7.
+2. **Up to 9 draft tokens** at one request, with a ceiling by live requests: 1–3 → 9, 4–5 → 8, 6–11 → 7, 12–13 → 6, 14+ → 5. The depth policy is
    set in `recipe.yaml` `env:` (`MBX_DEPTH_*`).
 3. **The drafter's output head is an NVFP4 copy** of NVIDIA's bf16 head, made at load: 0.36 GB instead of 1.27 GB read per
    draft token, full vocabulary. The model still verifies every draft with the shipped bf16 head, so the text is NVIDIA's
@@ -226,7 +234,7 @@ value of each row is bold; the mixed prompt is in the table above.
 | `MBX_DEPTH_WINDOW` | 48 | steps of history each decision looks at |
 | `MBX_DEPTH_PROMOTE` | 60,45 | +2 / +1 depth when the deepest position was accepted on more than this % of the window |
 | `MBX_DEPTH_DEMOTE` | 25,15 | −1 / −2 depth when below this % |
-| `MBX_DEPTH_CEIL` | [2 -> 7, 4 -> 6, 8 -> 5] | deepest draft by live requests (1 request: `num_speculative_tokens`) |
+| `MBX_DEPTH_CEIL` | [4 -> 8, 6 -> 7, 12 -> 6, 14 -> 5] | deepest draft by live requests (1 request: `num_speculative_tokens`) |
 
 The capture sizes must cover every (live requests) × (depth + 1) the ceiling allows; the shipped list does, up to 16 × 6.
 
@@ -368,7 +376,7 @@ hibrid48 checkpoints 98 GB each; INT4-AutoRound is ~120 GB and prepares its own 
 ## Memory on a Spark: what the kit does about it
 
 Unified memory means the GPU driver, the page cache and the kernel share one pool, and this serve uses most of it on purpose:
-the weights + the 27G KV pool + graphs and host processes. The kit never asks for your password; it stabilises memory with
+the weights + the 26G KV pool + graphs and host processes. The kit never asks for your password; it stabilises memory with
 what a user may do:
 
 - **waits** after removing the old container until the box reports ≥ 100G available (unified memory takes 30–60 s to come back
@@ -394,8 +402,10 @@ GPU's memory *is* those pages, so every migration first unmaps them from the GPU
 
 - **`max-model-len: 409600` + `hf-overrides`**: YaRN, 400k context (default). For the native 262,144: set `max-model-len:
   262144` and remove the `hf-overrides` line.
-- **`kv-cache-memory`** (bytes): 27G = 881,260 tokens in bf16 (26G for more headroom).
-- **`kv-cache-dtype: auto`** (bf16): `fp8` doubles the pool (1.71M tokens) for about 10 % less speed.
+- **`kv-cache-memory`** (bytes): 26G ≈ 849,000 tokens in bf16; each 1G more ≈ +32,600 tokens, with less headroom at 8–16
+  streams.
+- **`kv-cache-dtype: auto`** (bf16): `fp8` doubles the pool (~1.6M tokens) for 7–19 % less speed; with fp8 set
+  `num_speculative_tokens` to 7.
 - **`max-num-seqs`** 16: with RecoverSSM each request holds one recurrent state (no per-draft copies).
 - **`speculative-config`** up to 9 sampled draft tokens with block verification, depth chosen per request (`MBX_DEPTH_*`).
 - **`use-replayssm: true`**: RecoverSSM. Remove it for the stock GDN verify path (more memory per seat, slower steps).

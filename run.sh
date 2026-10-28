@@ -163,7 +163,7 @@ while IFS=$'\t' read -r k v; do
 done < <(rsection vllm)
 
 # INT4-AutoRound profile (measured on this checkpoint): fp8 side layers + draft scale 2, its draft head, no global MoE backend
-# (int4 experts take Marlin anyway; the draft head's bf16 experts refuse it), KV 24G (27G leaves too little headroom)
+# (int4 experts take Marlin anyway; the draft head's bf16 experts refuse it), KV 23G (26G leaves too little headroom)
 if [ -d "$MODEL_DIR/ple-table" ]; then
   ENVS+=(-e VLLM_FP8_HYBRID=1 -e MBX_MTP_DRAFT_SCALE=2)
   F2=(); i=0
@@ -172,7 +172,7 @@ if [ -d "$MODEL_DIR/ple-table" ]; then
     case "$f" in
       --moe-backend) i=$((i + 2)); continue;;
       --speculative-config) F2+=("$f" "${FLAGS[$((i + 1))]/\{\"method\":\"mtp\",/{\"method\":\"mtp\",\"model\":\"/cache/draft-k10\",}"); i=$((i + 2)); continue;;
-      --kv-cache-memory) v="${FLAGS[$((i + 1))]}"; [ "$v" = 27000000000 ] && v=24000000000; F2+=("$f" "$v"); i=$((i + 2)); continue;;
+      --kv-cache-memory) v="${FLAGS[$((i + 1))]}"; [ "$v" = 26000000000 ] && v=23000000000; F2+=("$f" "$v"); i=$((i + 2)); continue;;
     esac
     F2+=("$f"); i=$((i + 1))
   done
