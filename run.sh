@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Qwen3.8-Flash-Next (FP4-Local by default; hibrid48, hibrid48-uncensored, INT4-AutoRound) on ONE DGX Spark, vLLM 0.32: download if needed, wait for
 # memory, evict stale page cache, serve, wait healthy.
-# Everything is configured in recipe.yaml. OpenAI API on :$PORT. ./stop.sh stops, ./view.sh stats.
+# Everything is configured in recipe.yaml (or the yaml given: ./run.sh recipe-az.yaml). OpenAI API on :$PORT. ./stop.sh stops, ./view.sh stats.
 set -euo pipefail
 cd "$(dirname "$0")"
 command -v docker >/dev/null || { echo "docker is required"; exit 1; }
+RECIPE="${1:-recipe.yaml}"; [ -f "$RECIPE" ] || { echo "✗ no $RECIPE here"; exit 1; }
 
 # --- tiny recipe.yaml reader (two-level: section -> key: value; strips quotes/comments) ---------
 rkey() {  # rkey <section> <key>
@@ -13,7 +14,7 @@ rkey() {  # rkey <section> <key>
     sec==s && $1==k":" {
       sub(/^[ ]*[^:]*:[ ]*/,""); sub(/[ ]+#.*$/,"")
       gsub(/^["\x27]|["\x27]$/,""); print; exit
-    }' recipe.yaml
+    }' "$RECIPE"
 }
 rsection() {  # all key/value lines of a section, "key<TAB>value" (quotes/comments stripped)
   awk -v s="$1" '
@@ -24,7 +25,7 @@ rsection() {  # all key/value lines of a section, "key<TAB>value" (quotes/commen
       val=line; sub(/^[^:]*:[ ]*/,"",val); sub(/[ ]+#.*$/,"",val)
       gsub(/^["\x27]|["\x27]$/,"",val)
       if (key != "") print key "\t" val
-    }' recipe.yaml
+    }' "$RECIPE"
 }
 
 IMAGE="$(rkey server image)";       PORT="$(rkey server port)"

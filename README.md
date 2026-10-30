@@ -7,8 +7,28 @@ One box, one model, three commands. The default checkpoint is
 [`hibrid48`](https://huggingface.co/myllmbox/Qwen3.8-Flash-Next-hibrid48) runs on the same image: swap the `model:` line in
 `recipe.yaml`, as do [`hibrid48-uncensored`](https://huggingface.co/myllmbox/Qwen3.8-Flash-Next-hibrid48-uncensored) and
 [`INT4-AutoRound`](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound) by [@azampatti](https://github.com/azampatti).
+[`FP4-Local-AZ`](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-FP4-Local-AZ) has its own settings file: `./run.sh recipe-az.yaml`.
 
 **Side by side with v5.1** — every number, gauntlet page and quality verdict: [myllmbox.com/?a=mbx-v53&b=mbx-v51](https://myllmbox.com/?a=mbx-v53&b=mbx-v51)
+
+## FP4-Local-AZ (2026-10-30)
+
+[azampatti/Qwen3.8-Flash-Next-FP4-Local-AZ](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-FP4-Local-AZ): NVIDIA's FP4-Local
+routed at 5 of 512 experts per token, with a wider re-trained shared expert; every other weight as NVIDIA ships it. Same image,
+its own file: **`./run.sh recipe-az.yaml`** (K=12, KV 23G).
+
+| | FP4-Local-AZ | FP4-Local |
+|---|---|---|
+| code (TypeScript): c=1 / 4 / 8 / 16 | **86.9 / 211.0 / 300.7 / 398.2** tok/s | 84.4 / 176.5 / 240.8 / 344.0 |
+| mixed: c=1 / 4 / 8 / 16 | **60.5 / 145.1 / 226.4 / 356.2** | 56.5 / 128.7 / 201.9 / 308.6 |
+| thinking-on request: thinking / writing code | **56.5 / 102.8** | 51.5 / 76.2 |
+| prefill, 128k-token prompt | **2,691** tok/s | 2,270 |
+| same 128k prompt again | **0.37** s | 0.45 s |
+| KV pool | 750,933 tokens | 849,000 |
+| gauntlet (6 pastures + 6 fish) | **10.5 / 12** | 9 / 12 |
+
+On average +14 % throughput across all prompts and concurrencies. Its pages are plainer than FP4-Local's.
+Side by side: [myllmbox.com/?a=mbx-v54-az&b=mbx-v54](https://myllmbox.com/?a=mbx-v54-az&b=mbx-v54)
 
 ## v5.4 update (2026-10-28)
 
@@ -367,6 +387,7 @@ Switching is comment one line, uncomment another, `./run.sh`; `run.sh` applies e
 | `myllmbox/Qwen3.8-Flash-Next-hibrid48` | our NVFP4 body with an NVFP4 output head | the v5.1 numbers |
 | `myllmbox/Qwen3.8-Flash-Next-hibrid48-uncensored` | OrcaRouter's abliterated (refusal-removed) body with the same head — **no guardrails**; research, red-teaming, private use behind your own moderation | same speed as hibrid48 |
 | `azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound` | 5 of 512 experts per token, AutoRound int4 experts, fp8 side layers and n-gram table | the v5.2 numbers (KV pool on v5.3: 1,476,867 tokens) |
+| `azampatti/Qwen3.8-Flash-Next-FP4-Local-AZ` (own file: `./run.sh recipe-az.yaml`) | NVIDIA's FP4-Local at 5 of 512 experts per token, wider re-trained shared expert | the FP4-Local-AZ numbers above |
 
 The uncensored repo is **gated**: open its Hugging Face page, accept the agreement, then `hf auth login` (or `export
 HF_TOKEN=…`) before `./run.sh` — the kit checks both and tells you what is missing. Every checkpoint is served as

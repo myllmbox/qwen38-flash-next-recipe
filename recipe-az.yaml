@@ -1,0 +1,111 @@
+# AZ: azampatti's FP4-Local-AZ (NVIDIA's FP4-Local routed at 5 of its 512 experts per token, shared expert widened and
+# re-trained; every other weight as NVIDIA ships it). Same image as recipe.yaml, its own settings. Run: ./run.sh recipe-az.yaml
+# The one and only config. run.sh reads THIS — there is nothing else to configure.
+# Flag mapping: `name: value` -> --name value | `name: true` -> --name | `name: false` -> omitted.
+
+server:
+  image: myllmbox/qwen38-flash-next-vllm:v5.4     # pinned public tag (digest in README) = vLLM 0.32.0 (vllm/vllm-openai) + patches:
+                                                # RecoverSSM, the NVFP4 n-gram table (NVMe, async reads), compressed-scale
+                                                # Marlin MoE, the fused multi-step MTP draft, dynamic draft depth in full CUDA
+                                                # graphs. v5.2 (INT4-AutoRound, vLLM 0.30) = `git checkout v5.2`.
+  docker_args: --security-opt seccomp=unconfined   # required by the image's table reader
+  cpuset: "5-9,15-19"                           # the GB10's 10 Cortex-X925 3.9GHz cores (0-4,10-14
+                                                # are 2.8GHz A725) — measured +2-3% at every concurrency
+  model: azampatti/Qwen3.8-Flash-Next-FP4-Local-AZ   # HF repo, ~102G
+  port: 8000
+  models_dir: ./models
+  cache_dir: ./cache                            # compile caches + the table map (~31G, prepared on the first boot); deletable,
+                                                # the next boot rebuilds it
+  patches: ""                                   # vLLM patches from patches/, space-separated; "" = the image as shipped.
+                                                # See patches/README.md
+
+env:
+  MBX_PLE_MMAP: "1"                             # n-gram table off the GPU, read from NVMe
+  MBX_PLE_MMAP_MODE: "nvme"
+  MBX_PLE_MMAP_PREWARM: "0"
+  MBX_PLE_ASYNC: "1"                            # table reads off the critical path: decode stays in full CUDA graphs
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "1"
+  MBX_LOADER_PREPARE: "0"                       # weights exactly as shipped
+  MBX_LOADER_EMPTY_CACHE: "1"
+  MBX_MARLIN_CSF: "1"                           # NVFP4 expert scales stay compressed on the GPU
+  MBX_CSF_VISUAL_BF16: "0"                      # vision tower as shipped
+  MBX_MXFP8_A16: "0"                            # MXFP8 on b12x "auto", as NVIDIA ships it
+  MBX_PLE_PREFILL_CKPT: "1"                     # prefill checkpoints: agent turns resume near the cached end
+  VLLM_DISABLED_KERNELS: FlashInferCutedslMxfp8LinearKernel,FlashInferTrtllmMxfp8LinearKernel,DeepGemmMxfp8BmmLinearKernel,HummingMxfp8LinearKernel
+  MBX_DEPTH_SYNCFREE: "1"                       # draft-depth bookkeeping stays on the GPU
+  MBX_DEPTH_MODE: dynamic                       # dynamic draft depth | off = always num_speculative_tokens
+  MBX_DEPTH_MIN: "3"                            # the depth every request starts at
+  MBX_DEPTH_WINDOW: "48"                        # steps of history per decision
+  MBX_DEPTH_PROMOTE: "60,45"                    # +2 / +1 depth above this % acceptance of the deepest position
+  MBX_DEPTH_DEMOTE: "25,15"                     # -1 / -2 depth below this %
+  MBX_DEPTH_CEIL: "[4 -> 8, 6 -> 7, 12 -> 6, 14 -> 5]"   # deepest draft by live requests: 1-3 → 12, 4-5 → 8, 6-11 → 7, 12-13 → 6, 14+ → 5
+  MBX_DRAFT_HEAD: "1"                           # the drafter scores the full vocabulary with an NVFP4 copy of the head (0.36 GB
+                                                # instead of 1.27 GB per draft); the model still verifies with NVIDIA's bf16 head
+  # No OMP_NUM_THREADS: vLLM sizes its threads itself (many for the load, one for serving); a fixed value hurts one phase.
+  PYTHONUNBUFFERED: "1"                         # load progress actually shows in ./view.sh
+  VLLM_MARLIN_USE_ATOMIC_ADD: "1"               # Marlin small-N fast path (self-gating)
+  TORCH_CUDA_ARCH_LIST: "12.1a"
+  FLASHINFER_CUDA_ARCH_LIST: "12.1a"
+  TRITON_CACHE_DIR: /cache/triton
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True   # long prompts / more streams: without it each bigger shape strands a new cached GPU block (Qwen solo hung at c=16, 2026-10-27)
+  MALLOC_MMAP_THRESHOLD_: "65536"               # glibc returns big freed blocks to the OS at once (the loader's
+  MALLOC_TRIM_THRESHOLD_: "131072"              # garbage otherwise stays resident — and swaps)
+
+vllm:
+  served-model-name: Qwen/Qwen3.8-Flash-Next
+  engram-config: '{"cpu_offload": false}'
+  moe-backend: marlin                           # NVFP4 experts on Marlin with compressed scales
+  kernel-config: '{"linear_backend_per_quant":{"mxfp8":"b12x"}}'
+  load-format: mbx                              # our loader (reads only what each rank needs; drafter: 3 of 21 files)
+  distributed-executor-backend: mp
+  gpu-memory-utilization: 0.88                  # with kv-cache-memory pinned this does not size the KV pool
+  kv-cache-memory: "23000000000"                # 23G bf16 KV = 750,933 tokens: leaves room for 16 streams resuming at once
+  kv-cache-dtype: auto                          # bf16 KV: the deep drafts land ~2x as often (+8-23 %). fp8 = ~1.6M tokens
+                                                # (twice the pool) for 7-19 % less speed; with fp8 set num_speculative_tokens
+                                                # 7 instead of 9 below (v5.3's setting: fp8 drafts land too rarely at depth 8-9)
+  mamba-ssm-cache-dtype: bfloat16               # GDN recurrent state in bf16 (+10 % pool, +5-8 % at 8 streams)
+  max-model-len: 409600                         # 400k via YaRN = 262,144 × 1.5625 (config: @vr8vr8; 100 % needle
+                                                # retrieval at 407,552 tokens: @grau_marc). Native: 262144 without hf-overrides
+  hf-overrides: '{"text_config":{"max_position_embeddings":409600,"rope_parameters":{"rope_type":"yarn","factor":1.5625,"original_max_position_embeddings":262144,"rope_theta":10000000,"partial_rotary_factor":0.25,"mrope_section":[11,11,10],"mrope_interleaved":true}}}'
+  block-size: 3456                              # a multiple of 16 (the attention ring at K=12) and 64 (prefill checkpoints)
+  prefix-match-unit: 64                         # cache hits every 64 tokens
+  compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,18,20,21,24,25,27,30,32,35,39,40,44,48,49,54,60,64,70,75,80,90,96]}'
+                                                # full CUDA graphs for decode: every (live requests) × (depth + 1) the
+                                                # depth ceiling allows, 16 seats × (5 drafts + 1) = 96 at most
+  max-num-seqs: 16                              # 16 streams (RecoverSSM: one GDN state per request, no per-draft copies)
+  max-num-batched-tokens: 8192                  # also the image-input encoder budget — keep for image requests
+  enable-prefix-caching: true
+  enable-prompt-tokens-details: true
+  enable-auto-tool-choice: true
+  tool-call-parser: qwen3_xml
+  reasoning-parser: qwen3
+  speculative-config: '{"method":"mtp","num_speculative_tokens":12,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
+                                                # dynamic depth (MBX_DEPTH_* above): 12 = the deepest a request may draft
+  async-scheduling: true
+  use-replayssm: true                           # RecoverSSM (vLLM PR 58863): drafts verify off one GDN state and replay
+                                                # only the accepted tokens — faster steps, and draft depth costs no memory
+  # default-chat-template-kwargs: '{"enable_thinking": false}'   # thinking off for every request. With thinking ON, give
+                                                # max_tokens well above the reasoning: a small budget ends with empty content
+
+
+# Optional front proxy (uncomment the section to use it; absent = vLLM serves the port itself). It keeps long prefills
+# and long thinking alive behind idle-timeout proxies (SSE pings) and can watch the model's text with two guards:
+#   loop guard    — ANY phrase (3–64 chars, with a letter) repeated `loop_repeats` times in a row, or a 2-char run of
+#                   `size` chars ("?!?!?!", "2222…"). Generic: no list needed.
+#   pattern guard — your own strings, one per line in cache/<patterns_file>; a hit when one appears `pattern_count` times.
+# Every hit is logged to cache/logs/; stop: true also ends that answer with <stopped reason="repetition"/> (or reason="pattern") and frees the
+# seat, so the client can retry. log_all: on writes every request + its full response to cache/requests/ (one JSON per
+# request — it holds your users' prompts and answers; off by default).
+# proxy:
+#   keepalive: 30                               # seconds between pings while the model is silent
+#   loop_guard: on                              # on | off
+#   size: 12                                    # 2-char run length; 0 = only phrase loops
+#   loop_period: 64                             # longest repeated phrase checked, in characters
+#   loop_repeats: 8                             # repeats in a row that count as a loop
+#   loop_fields: reasoning_content,reasoning    # where both guards look (add content to watch the answer too)
+#   pattern_guard: off                          # on | off
+#   patterns_file: patterns.txt                 # in cache/, one string per line, # = comment
+#   pattern_count: 1                            # appearances that count as a hit
+#   stop: false                                 # false = log only; true = cut the stream and abort the seat
+#   log_all: off                                # on = every request + response → cache/requests/
+#   token: ""                                   # optional Bearer token for the API
